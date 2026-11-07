@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>ShackMate Soomfon WebHID demo</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: system-ui, sans-serif; background: #111; color: #eee; padding: 2rem; }
+  h1 { margin-top: 0; }
+  button { font: inherit; padding: 0.5rem 1rem; margin-right: 0.5rem; cursor: pointer; }
+  button:disabled { opacity: 0.4; cursor: default; }
+
+  /* ---- device body, mirrors the physical Soomfon layout ------------------
+     3x2 key grid + 3 round buttons on the left; one large knob top-right,
+     two smaller knobs below it on the right. */
+  .device {
+    margin-top: 1.5rem;
+    padding: 1.75rem 2rem;
+    background: linear-gradient(160deg, #2c2d30, #1c1d1f);
+    border-radius: 18px;
+    display: inline-block;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.5);
+  }
+  .wordmark {
+    font-weight: 700; font-size: 1.1rem; color: #f2f2f2;
+    margin-bottom: 1.1rem; letter-spacing: 0.01em;
+  }
+
+  .controls { display: flex; align-items: stretch; gap: 2.8rem; }
+
+  .left-col { display: flex; flex-direction: column; gap: 0.9rem; }
+  .keys-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 72px);
+    grid-template-rows: repeat(2, 72px);
+    gap: 0.6rem;
+  }
+  .key {
+    border-radius: 8px;
+    border: 2px solid #444;
+    background: #111;
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden;
+    transition: border-color 0.08s, box-shadow 0.08s;
+    cursor: pointer;
+  }
+  .key img { width: 100%; height: 100%; object-fit: cover; }
+  .key.pressed { border-color: #5ad1ff; box-shadow: 0 0 14px #5ad1ff; }
+
+  .buttons-row {
+    display: grid;
+    grid-template-columns: repeat(3, 72px);
+    gap: 0.6rem;
+    justify-items: center;
+  }
+  .round-btn {
+    width: 38px; height: 38px;
+    border-radius: 50%;
+    border: 2px solid #555;
+    background: radial-gradient(circle at 35% 30%, #4a4a4a, #222);
+    transition: background 0.08s, border-color 0.08s, box-shadow 0.08s;
+  }
+  .round-btn.pressed { background: #ff6b5a; border-color: #ff6b5a; box-shadow: 0 0 12px #ff6b5a; }
+
+  .right-col { display: flex; flex-direction: column; justify-content: space-between; align-items: center; }
+
+  .knob {
+    position: relative;
+    border-radius: 50%;
+    border: 2px solid #555;
+    background: radial-gradient(circle at 35% 30%, #4a4a4a, #1a1a1a);
+    transition: border-color 0.08s, box-shadow 0.08s;
+  }
+  .knob.pressed { border-color: #5ad1ff; box-shadow: 0 0 16px #5ad1ff; }
+  .knob.knob-lg { width: 110px; height: 110px; }
+  .knob.knob-sm { width: 52px; height: 52px; }
+  .knob .pointer {
+    position: absolute; left: 50%; top: 50%;
+    width: 3px; background: #ccc;
+    transform-origin: 50% 0%;
+    transform: translate(-50%, 0) rotate(0deg);
+    transition: transform 0.12s ease-out;
+  }
+  .knob-lg .pointer { height: 42px; }
+  .knob-sm .pointer { height: 20px; }
+  .knob .arrow {
+    position: absolute; left: 50%; transform: translateX(-50%);
+    font-size: 18px; opacity: 0; transition: opacity 0.15s;
+  }
+  .knob-lg .arrow { top: -24px; font-size: 24px; }
+  .knob-sm .arrow { top: -22px; }
+  .knob .arrow.show { opacity: 1; }
+
+  .knobs-small-row { display: flex; gap: 1.3rem; }
+
+  .label { font-size: 11px; color: #777; letter-spacing: 0.05em; text-transform: uppercase; margin-bottom: 0.4rem; }
+
+  #support-note { color: #999; font-size: 13px; max-width: 46em; }
+  #support-note code { background: #222; padding: 0.1em 0.4em; border-radius: 4px; color: #ddd; }
+  #log {
+    margin-top: 1.5rem; height: 220px; overflow-y: auto;
+    background: #000; padding: 0.75rem;
+    font-family: ui-monospace, monospace; font-size: 13px;
+    border-radius: 6px;
+  }
+</style>
+</head>
+<body>
+  <h1>ShackMate Soomfon WebHID demo</h1>
+  <p id="support-note">
+    Uses WebHID directly in Chrome/Edge. Other browsers (e.g. Safari) automatically
+    fall back to the local bridge - run <code>python3 soomfon_bridge.py</code> first.
+  </p>
+
+  <button id="connect">Connect device</button>
+  <button id="disconnect" disabled>Disconnect</button>
+  <button id="push-icons" disabled>Push icons to device</button>
+  <button id="clear-all" disabled>Clear all keys</button>
+  <label style="margin-left: 1rem; font-size: 13px; color: #aaa;">
+    <input type="checkbox" id="force-bridge" />
+    Force WebSocket bridge (skip WebHID, for testing)
+  </label>
+
+  <div class="device">
+    <div class="wordmark">ShackMate Soomfon</div>
+    <div class="controls">
+      <div class="left-col">
+        <div class="keys-grid" id="keys"></div>
+        <div class="buttons-row" id="buttons"></div>
+      </div>
+      <div class="right-col">
+        <div id="knob-big"></div>
+        <div class="knobs-small-row" id="knobs-small"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="log"></div>
+
+  <script type="module">
+    import { KEY_COUNT } from "./soomfon-webhid.js";
+    import { connectSoomfon, autoConnect } from "./soomfon-client.js";
+
+    const ICON_NAMES = { 1: "RIG", 2: "ANTENNA", 3: "TUNER", 4: "ROTATOR", 5: "SATELLITES", 6: "SCANNER" };
+    const KNOB_COUNT = 3;
+    const BUTTON_COUNT = 3;
+
+    const log = document.getElementById("log");
+    const connectBtn = document.getElementById("connect");
+    const disconnectBtn = document.getElementById("disconnect");
+    const pushIconsBtn = document.getElementById("push-icons");
+    const clearAllBtn = document.getElementById("clear-all");
+    const keysDiv = document.getElementById("keys");
+    const buttonsDiv = document.getElementById("buttons");
+    const knobBigDiv = document.getElementById("knob-big");
+    const knobsSmallDiv = document.getElementById("knobs-small");
+    const forceBridgeCheckbox = document.getElementById("force-bridge");
+
+    function logLine(msg) {
+      const line = document.createElement("div");
+      line.textContent = `${new Date().toLocaleTimeString()}  ${msg}`;
+      log.prepend(line);
+      while (log.childNodes.length > 200) log.removeChild(log.lastChild);
+    }
+
+    // ---- build UI: 6 keys, 3 round buttons, 3 knobs --------------------------
+    const iconBlobs = {};   // key -> Blob, loaded from icons/<key>.png
+    const keyEls = {};
+    for (let k = 1; k <= KEY_COUNT; k++) {
+      const el = document.createElement("div");
+      el.className = "key";
+      el.title = ICON_NAMES[k] ?? `Key ${k}`;
+      const img = document.createElement("img");
+      el.appendChild(img);
+      el.addEventListener("click", () => pushIcon(k));
+      keysDiv.appendChild(el);
+      keyEls[k] = el;
+
+      fetch(`icons/${k}.png`)
+        .then((r) => (r.ok ? r.blob() : Promise.reject(new Error(`${r.status}`))))
+        .then((blob) => {
+          iconBlobs[k] = blob;
+          img.src = URL.createObjectURL(blob);
+        })
+        .catch(() => logLine(`could not load icons/${k}.png (run generate_icons.py?)`));
+    }
+
+    const buttonEls = {};
+    for (let b = 0; b < BUTTON_COUNT; b++) {
+      const el = document.createElement("div");
+      el.className = "round-btn";
+      el.title = `Button ${b + 1}`;
+      buttonsDiv.appendChild(el);
+      buttonEls[b] = el;
+    }
+
+    // Knob 1 is the large top-right knob; knob 0 is the small left knob,
+    // knob 2 the small right knob (confirmed against the physical unit).
+    const BIG_KNOB = 1;
+    const knobEls = {};
+    const knobAngle = {};
+    for (let n = 0; n < KNOB_COUNT; n++) {
+      const knob = document.createElement("div");
+      knob.className = n === BIG_KNOB ? "knob knob-lg" : "knob knob-sm";
+      const pointer = document.createElement("div");
+      pointer.className = "pointer";
+      const arrow = document.createElement("div");
+      arrow.className = "arrow";
+      knob.appendChild(pointer);
+      knob.appendChild(arrow);
+      (n === BIG_KNOB ? knobBigDiv : knobsSmallDiv).appendChild(knob);
+      knobEls[n] = { knob, pointer, arrow };
+      knobAngle[n] = 0;
+    }
+
+    // ---- device ---------------------------------------------------------------
+    let dev = null;
+
+    async function pushIcon(k) {
+      if (!dev || !iconBlobs[k]) return;
+      await dev.setKeyImage(k, iconBlobs[k]);
+      logLine(`pushed icon to key ${k}`);
+    }
+
+    async function pushAllIcons() {
+      for (let k = 1; k <= KEY_COUNT; k++) {
+        if (iconBlobs[k]) await dev.setKeyImage(k, iconBlobs[k], { flush: false });
+      }
+      await dev.flush();
+      logLine("pushed all icons to device");
+    }
+
+    function handleInput(detail) {
+      const { kind, index, pressed, delta, code } = detail;
+
+      if (kind === "key" && keyEls[index]) {
+        keyEls[index].classList.toggle("pressed", pressed);
+      } else if (kind === "button" && buttonEls[index] !== undefined) {
+        buttonEls[index].classList.toggle("pressed", pressed);
+      } else if (kind === "knob_press" && knobEls[index]) {
+        knobEls[index].knob.classList.toggle("pressed", pressed);
+      } else if (kind === "knob_turn" && knobEls[index]) {
+        const { pointer, arrow } = knobEls[index];
+        knobAngle[index] = (knobAngle[index] + delta * 20) % 360;
+        pointer.style.transform = `translate(-50%, 0) rotate(${knobAngle[index]}deg)`;
+        arrow.textContent = delta > 0 ? "↻" : "↺"; // clockwise / counter-clockwise
+        arrow.classList.add("show");
+        clearTimeout(arrow._fadeTimer);
+        arrow._fadeTimer = setTimeout(() => arrow.classList.remove("show"), 450);
+      }
+
+      logLine(
+        kind === "knob_turn"
+          ? `knob ${index} turned ${delta > 0 ? "clockwise" : "counter-clockwise"}`
+          : `${kind} ${index} ${pressed ? "down" : "up"} (code 0x${code.toString(16)})`
+      );
+    }
+
+    async function onConnected(connectedDev) {
+      dev = connectedDev;
+      dev.addEventListener("input", (e) => handleInput(e.detail));
+      logLine(`connected via ${dev.backend === "webhid" ? "WebHID" : "local bridge (soomfon_bridge.py)"}`);
+      await pushAllIcons();
+
+      connectBtn.disabled = true;
+      disconnectBtn.disabled = false;
+      pushIconsBtn.disabled = false;
+      clearAllBtn.disabled = false;
+      forceBridgeCheckbox.disabled = true;
+    }
+
+    connectBtn.addEventListener("click", async () => {
+      try {
+        await onConnected(await connectSoomfon({ preferBridge: forceBridgeCheckbox.checked }));
+      } catch (err) {
+        logLine(`error: ${err.message}`);
+        console.error(err);
+      }
+    });
+
+    disconnectBtn.addEventListener("click", async () => {
+      if (dev) await dev.close();
+      dev = null;
+      logLine("disconnected");
+      connectBtn.disabled = false;
+      disconnectBtn.disabled = true;
+      pushIconsBtn.disabled = true;
+      clearAllBtn.disabled = true;
+      forceBridgeCheckbox.disabled = false;
+    });
+
+    pushIconsBtn.addEventListener("click", pushAllIcons);
+
+    clearAllBtn.addEventListener("click", async () => {
+      if (dev) await dev.clearAll();
+      logLine("cleared all keys");
+    });
+
+    // ---- auto-connect on page load ---------------------------------------
+    // No gesture needed: reopens an already-authorized WebHID device, or the
+    // WebSocket bridge, without prompting. Falls back to the manual Connect
+    // button (which can show the WebHID picker) if neither is reachable.
+    (async function init() {
+      try {
+        const autoDev = await autoConnect();
+        if (autoDev) {
+          await onConnected(autoDev);
+        } else {
+          logLine("auto-connect: no authorized WebHID device and no bridge reachable - click Connect device");
+        }
+      } catch (err) {
+        logLine(`auto-connect error: ${err.message}`);
+        console.error(err);
+      }
+    })();
+  </script>
+</body>
+</html>
